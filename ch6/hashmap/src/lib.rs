@@ -1,5 +1,5 @@
 use std::alloc::{alloc, dealloc, realloc, Layout};
-use std::borrow::{Borrow, BorrowMut};
+use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::mem::size_of;
@@ -63,14 +63,14 @@ impl<K, V> HashMap<K, V> {
         }
     }
 
-    pub fn assert_zst() {
+    fn assert_zst() {
         if size_of::<Cell<K, V>>() == 0 {
             panic!("ZSTs are not supported");
         }
     }
 
     /// Returns proper map size for at least given capacity
-    pub fn next_size(cap: usize) -> usize {
+    fn next_size(cap: usize) -> usize {
         let newsize = cap * 2;
         std::iter::successors(Some(MIN_SIZE_SHIFT), |i| Some(i * 2))
             .find(|i| (2 << *i) >= newsize)
@@ -280,5 +280,66 @@ impl<K, V> Drop for HashMap<K, V> {
                 dealloc(self.ptr.as_ptr() as _, layout);
             }
         }
+    }
+}
+
+pub struct HashSet<T>(HashMap<T, ()>);
+
+impl<T> HashSet<T> {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        Self(HashMap::with_capacity(cap))
+    }
+}
+
+impl<T> HashSet<T>
+where
+    T: Eq + Hash,
+{
+    pub fn rehash(&mut self) {
+        self.0.rehash()
+    }
+
+    pub fn get<Q>(&self, value: &Q) -> Option<&T>
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let map = &self.0;
+        let idx = map.expected_idx(value);
+
+        map.idx_chain(idx)
+            .map_while(|idx| {
+                let item = unsafe { &*map.ptr.as_ptr().add(idx) };
+                match item {
+                    Cell::Empty => None,
+                    item => Some(item),
+                }
+            })
+            .find_map(|item| match item {
+                Cell::Item { key, .. } if key.borrow() == value => Some(key),
+                _ => None,
+            })
+    }
+
+    pub fn insert(&mut self, value: T) -> bool {
+        self.0.insert(value, ()).is_some()
+    }
+
+    pub fn remove<Q>(&mut self, k: &Q) -> bool
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.0.remove(k).is_some()
+    }
+}
+
+impl<T> Default for HashSet<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
