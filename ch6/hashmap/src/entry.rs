@@ -1,6 +1,5 @@
 use crate::{Cell, HashMap};
 use std::hash::Hash;
-use std::ptr::drop_in_place;
 
 pub struct VacantEntry<'map, K, V> {
     cell: &'map mut Cell<K, V>,
@@ -72,13 +71,11 @@ impl<'map, K, V> OccupiedEntry<'map, K, V> {
     }
 
     pub fn remove(self) -> V {
-        match self.cell {
-            Cell::Item { key, value } => {
-                let v = unsafe { std::ptr::read(value) };
-                unsafe { drop_in_place(key) };
-                unsafe { std::ptr::write(self.cell, Cell::Tombstone) };
-                v
-            }
+        let mut cell = Cell::Tombstone;
+        std::mem::swap(self.cell, &mut cell);
+
+        match cell {
+            Cell::Item { value, .. } => value,
             _ => unreachable!(),
         }
     }
@@ -146,12 +143,18 @@ where
         let idx = self.expected_idx(&key);
 
         for idx in self.idx_chain(idx) {
-            let cell = unsafe { &mut *self.ptr.as_ptr().add(idx) };
-            match cell {
+            match &self.vec[idx] {
                 Cell::Item { key: k, .. } if *k == key => {
-                    return Entry::Occupied(OccupiedEntry { cell })
+                    return Entry::Occupied(OccupiedEntry {
+                        cell: &mut self.vec[idx],
+                    })
                 }
-                Cell::Empty | Cell::Tombstone => return Entry::Vacant(VacantEntry { cell, key }),
+                Cell::Empty | Cell::Tombstone => {
+                    return Entry::Vacant(VacantEntry {
+                        cell: &mut self.vec[idx],
+                        key,
+                    })
+                }
                 _ => (),
             }
         }

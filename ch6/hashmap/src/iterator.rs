@@ -1,26 +1,13 @@
-use std::{
-    alloc::{dealloc, Layout},
-    hash::Hash,
-    marker::PhantomData,
-    mem::ManuallyDrop,
-    ptr::NonNull,
-};
+use std::hash::Hash;
+use std::{slice, vec};
 
 use crate::{Cell, HashMap};
 
-pub struct IntoIter<K, V> {
-    map: ManuallyDrop<HashMap<K, V>>,
-    curr: NonNull<Cell<K, V>>,
-    end: *const Cell<K, V>,
-}
+pub struct IntoIter<K, V>(vec::IntoIter<Cell<K, V>>);
 
 impl<K, V> IntoIter<K, V> {
     fn new(map: HashMap<K, V>) -> Self {
-        Self {
-            curr: map.ptr,
-            end: unsafe { map.ptr.as_ptr().add(map.alloc_size) },
-            map: ManuallyDrop::new(map),
-        }
+        Self(map.vec.into_iter())
     }
 }
 
@@ -28,14 +15,9 @@ impl<K, V> Iterator for IntoIter<K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.curr.as_ptr() as *const _ != self.end {
-            let curr = self.curr;
-            self.curr = unsafe { NonNull::new(self.curr.as_ptr().add(1)).unwrap() };
-
-            if let Cell::Item { key, value } = unsafe { &*curr.as_ptr() } {
-                let k = unsafe { std::ptr::read(key) };
-                let v = unsafe { std::ptr::read(value) };
-                return Some((k, v));
+        while let Some(cell) = self.0.next() {
+            if let Cell::Item { key, value } = cell {
+                return Some((key, value));
             }
         }
 
@@ -52,32 +34,11 @@ impl<K, V> IntoIterator for HashMap<K, V> {
     }
 }
 
-impl<K, V> Drop for IntoIter<K, V> {
-    fn drop(&mut self) {
-        let len = unsafe { self.end.offset_from(self.curr.as_ptr()) as usize };
-        let slice = unsafe { std::slice::from_raw_parts_mut(self.curr.as_ptr(), len) };
-        unsafe { std::ptr::drop_in_place(slice) }
-
-        if self.map.alloc_size > 0 {
-            let layout = Layout::array::<Cell<K, V>>(self.map.alloc_size).unwrap();
-            unsafe { dealloc(self.map.ptr.as_ptr() as _, layout) }
-        }
-    }
-}
-
-pub struct Iter<'map, K, V> {
-    map: PhantomData<&'map HashMap<K, V>>,
-    curr: NonNull<Cell<K, V>>,
-    end: *const Cell<K, V>,
-}
+pub struct Iter<'map, K, V>(slice::Iter<'map, Cell<K, V>>);
 
 impl<'map, K, V> Iter<'map, K, V> {
     fn new(map: &'map HashMap<K, V>) -> Self {
-        Self {
-            curr: map.ptr,
-            end: unsafe { map.ptr.as_ptr().add(map.alloc_size) },
-            map: PhantomData,
-        }
+        Self(map.vec.iter())
     }
 }
 
@@ -85,11 +46,8 @@ impl<'map, K, V> Iterator for Iter<'map, K, V> {
     type Item = (&'map K, &'map V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.curr.as_ptr() as *const _ != self.end {
-            let curr = self.curr;
-            self.curr = unsafe { NonNull::new(self.curr.as_ptr().add(1)).unwrap() };
-
-            if let Cell::Item { key, value } = unsafe { &*curr.as_ptr() } {
+        while let Some(cell) = self.0.next() {
+            if let Cell::Item { key, value } = cell {
                 return Some((key, value));
             }
         }
@@ -107,19 +65,11 @@ impl<'map, K, V> IntoIterator for &'map HashMap<K, V> {
     }
 }
 
-pub struct IterMut<'map, K, V> {
-    map: PhantomData<&'map mut HashMap<K, V>>,
-    curr: NonNull<Cell<K, V>>,
-    end: *const Cell<K, V>,
-}
+pub struct IterMut<'map, K, V>(slice::IterMut<'map, Cell<K, V>>);
 
 impl<'map, K, V> IterMut<'map, K, V> {
     fn new(map: &'map mut HashMap<K, V>) -> Self {
-        Self {
-            curr: map.ptr,
-            end: unsafe { map.ptr.as_ptr().add(map.alloc_size) },
-            map: PhantomData,
-        }
+        Self(map.vec.iter_mut())
     }
 }
 
@@ -127,11 +77,8 @@ impl<'map, K, V> Iterator for IterMut<'map, K, V> {
     type Item = (&'map K, &'map mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.curr.as_ptr() as *const _ != self.end {
-            let curr = self.curr;
-            self.curr = unsafe { NonNull::new(self.curr.as_ptr().add(1)).unwrap() };
-
-            if let Cell::Item { key, value } = unsafe { &mut *curr.as_ptr() } {
+        while let Some(cell) = self.0.next() {
+            if let Cell::Item { key, value } = cell {
                 return Some((key, value));
             }
         }
