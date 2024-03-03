@@ -15,8 +15,9 @@ impl<K, V> Iterator for IntoIter<K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
+        #[allow(clippy::while_let_on_iterator)]
         while let Some(cell) = self.0.next() {
-            if let Cell::Item { key, value } = cell {
+            if let Cell::Item { key, value, .. } = cell {
                 return Some((key, value));
             }
         }
@@ -46,8 +47,9 @@ impl<'map, K, V> Iterator for Iter<'map, K, V> {
     type Item = (&'map K, &'map V);
 
     fn next(&mut self) -> Option<Self::Item> {
+        #[allow(clippy::while_let_on_iterator)]
         while let Some(cell) = self.0.next() {
-            if let Cell::Item { key, value } = cell {
+            if let Cell::Item { key, value, .. } = cell {
                 return Some((key, value));
             }
         }
@@ -77,8 +79,9 @@ impl<'map, K, V> Iterator for IterMut<'map, K, V> {
     type Item = (&'map K, &'map mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
+        #[allow(clippy::while_let_on_iterator)]
         while let Some(cell) = self.0.next() {
-            if let Cell::Item { key, value } = cell {
+            if let Cell::Item { key, value, .. } = cell {
                 return Some((key, value));
             }
         }

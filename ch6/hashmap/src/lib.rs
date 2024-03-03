@@ -11,7 +11,7 @@ pub const MIN_SIZE_SHIFT: usize = 3;
 enum Cell<K, V> {
     Empty,
     Tombstone,
-    Item { key: K, value: V },
+    Item { hash: u64, key: K, value: V },
 }
 
 impl<K, V> Cell<K, V> {
@@ -34,7 +34,7 @@ pub struct HashMap<K, V> {
 impl<K, V> HashMap<K, V> {
     pub fn new() -> Self {
         Self {
-            vec: vec![],
+            vec: Vec::new(),
             used: 0,
             hasher_builder: RandomState::default(),
         }
@@ -53,9 +53,7 @@ impl<K, V> HashMap<K, V> {
     /// Returns proper map size for at least given capacity
     fn next_size(cap: usize) -> usize {
         let newsize = cap * 2;
-        std::iter::successors(Some(MIN_SIZE_SHIFT), |i| Some(i * 2))
-            .find(|i| (2 << *i) >= newsize)
-            .unwrap()
+        (MIN_SIZE_SHIFT..).find(|i| (2 << *i) >= newsize).unwrap()
     }
 
     /// Indicies chain starting from given index, wrapping around the map, visiting every index
@@ -64,10 +62,15 @@ impl<K, V> HashMap<K, V> {
         (idx..self.vec.len()).chain(0..idx)
     }
 
-    /// Expected index where given key should be stored.
-    fn expected_idx<Q: Hash + ?Sized>(&self, key: &Q) -> usize {
-        let hash = self.hasher_builder.hash_one(key) % self.vec.len() as u64;
-        hash as _
+    fn cells(&self, idx: usize) -> impl Iterator<Item = &'_ Cell<K, V>> {
+        let pre = &self.vec[idx..];
+        let post = &self.vec[..idx];
+        pre.iter().chain(post)
+    }
+
+    fn cells_mut(&mut self, idx: usize) -> impl Iterator<Item = &'_ mut Cell<K, V>> {
+        let (post, pre) = self.vec.split_at_mut(idx);
+        pre.iter_mut().chain(post)
     }
 }
 
@@ -77,31 +80,29 @@ where
 {
     /// After this call, the map should have capacity to fit at least `newcap`.
     fn grow_to(&mut self, newcap: usize) {
-        if newcap == 0 {
-            return;
-        }
+        let minsize = self.vec.len().max(2 << MIN_SIZE_SHIFT);
+        let newsize = std::iter::successors(Some(minsize), |size| Some(size * 2))
+            .find(|size| *size >= newcap * 2)
+            .unwrap();
 
-        let newsize = Self::next_size(newcap);
         if newsize > self.vec.len() {
             self.vec.resize_with(newsize, || Cell::Empty);
+            self.rehash();
         }
-
-        self.rehash();
     }
 
     pub fn rehash(&mut self) {
         for i in 0..self.vec.len() {
-            let item = &mut self.vec[i];
-            let key = match item {
+            let hash = match &self.vec[i] {
                 Cell::Tombstone => {
-                    *item = Cell::Empty;
+                    self.vec[i] = Cell::Empty;
                     continue;
                 }
                 Cell::Empty => continue,
-                Cell::Item { key, .. } => key,
+                Cell::Item { hash, .. } => *hash,
             };
-            let idx = self.expected_idx(key);
 
+            let idx = hash as usize % self.vec.len();
             if idx == i {
                 continue;
             }
@@ -123,15 +124,17 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let idx = self.expected_idx(k);
+        if self.vec.is_empty() {
+            return None;
+        }
 
-        self.idx_chain(idx)
-            .map_while(|idx| match &self.vec[idx] {
-                Cell::Empty => None,
-                item => Some(item),
-            })
-            .find_map(|item| match item {
-                Cell::Item { key, value } if key.borrow() == k => Some(value),
+        let h = self.hasher_builder.hash_one(k);
+        let idx = h as usize % self.vec.len();
+
+        self.cells(idx)
+            .take_while(|cell| !matches!(cell, Cell::Empty))
+            .find_map(|cell| match cell {
+                Cell::Item { key, hash, value } if h == *hash && key.borrow() == k => Some(value),
                 _ => None,
             })
     }
@@ -141,45 +144,58 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let idx = self.expected_idx(k);
+        if self.vec.is_empty() {
+            return None;
+        }
 
-        self.idx_chain(idx)
-            .take_while(|idx| !matches!(&self.vec[*idx], Cell::Empty))
-            .find_map(|idx| match &mut self.vec[idx] {
-                Cell::Item { key, value } if Borrow::<Q>::borrow(key) == k => Some(value),
+        let h = self.hasher_builder.hash_one(k);
+        let idx = h as usize % self.vec.len();
+
+        self.cells_mut(idx)
+            .take_while(|cell| !matches!(cell, Cell::Empty))
+            .find_map(|cell| match cell {
+                Cell::Item { key, hash, value } if h == *hash && Borrow::<Q>::borrow(key) == k => {
+                    Some(value)
+                }
                 _ => None,
             })
     }
 
     pub fn insert(&mut self, k: K, mut v: V) -> Option<V> {
-        let idx = self.expected_idx(&k);
+        let h = self.hasher_builder.hash_one(&k);
 
-        for idx in self.idx_chain(idx) {
-            match &mut self.vec[idx] {
-                Cell::Empty => break,
-                Cell::Item { key, value } if *key == k => {
-                    std::mem::swap(value, &mut v);
-                    return Some(v);
+        if !self.vec.is_empty() {
+            let idx = h as usize % self.vec.len();
+
+            for cell in self.cells_mut(idx) {
+                match cell {
+                    Cell::Empty => break,
+                    Cell::Item { key, hash, value } if h == *hash && *key == k => {
+                        std::mem::swap(value, &mut v);
+                        return Some(v);
+                    }
+                    _ => (),
                 }
-                _ => (),
             }
         }
 
         self.grow_to(self.used + 1);
 
-        let idx = self.expected_idx(&k);
+        let idx = h as usize % self.vec.len();
+
         let cell = self
-            .idx_chain(idx)
-            .find_map(|idx| {
-                if self.vec[idx].is_empty() {
-                    Some(&mut self.vec[idx])
-                } else {
-                    None
-                }
-            })
+            .cells_mut(idx)
+            .find_map(|cell| if cell.is_empty() { Some(cell) } else { None })
             .unwrap();
 
-        *cell = Cell::Item { key: k, value: v };
+        *cell = Cell::Item {
+            key: k,
+            hash: h,
+            value: v,
+        };
+
+        self.used += 1;
+
         None
     }
 
@@ -188,22 +204,30 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let idx = self.expected_idx(k);
+        let h = self.hasher_builder.hash_one(k);
+        let idx = h as usize % self.vec.len();
 
-        self.idx_chain(idx)
-            .take_while(|idx| !matches!(&self.vec[*idx], Cell::Empty))
-            .find_map(|idx| match &self.vec[idx] {
-                Cell::Item { key, .. } if (*key).borrow() == k => {
-                    let mut cell = Cell::Tombstone;
-                    std::mem::swap(&mut self.vec[idx], &mut cell);
-                    let Cell::Item { value, .. } = cell else {
+        let res = self
+            .cells_mut(idx)
+            .take_while(|cell| !matches!(cell, Cell::Empty))
+            .find_map(|cell| match cell {
+                Cell::Item { key, hash, .. } if h == *hash && (*key).borrow() == k => {
+                    let mut result = Cell::Tombstone;
+                    std::mem::swap(cell, &mut result);
+                    let Cell::Item { value, .. } = result else {
                         unreachable!()
                     };
 
                     Some(value)
                 }
                 _ => None,
-            })
+            });
+
+        if res.is_some() {
+            self.used -= 1;
+        }
+
+        res
     }
 }
 
@@ -238,8 +262,14 @@ where
         T: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let map = self.0;
-        let idx = map.expected_idx(value);
+        let map = &self.0;
+
+        if map.vec.is_empty() {
+            return None;
+        }
+
+        let h = map.hasher_builder.hash_one(value);
+        let idx = h as usize % map.vec.len();
 
         map.idx_chain(idx)
             .map_while(|idx| match &map.vec[idx] {
@@ -247,7 +277,7 @@ where
                 item => Some(item),
             })
             .find_map(|item| match item {
-                Cell::Item { key, .. } if key.borrow() == value => Some(key),
+                Cell::Item { key, hash, .. } if h == *hash && key.borrow() == value => Some(key),
                 _ => None,
             })
     }

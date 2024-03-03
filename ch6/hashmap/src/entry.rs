@@ -1,8 +1,11 @@
 use crate::{Cell, HashMap};
+use std::hash::BuildHasher;
 use std::hash::Hash;
 
 pub struct VacantEntry<'map, K, V> {
     cell: &'map mut Cell<K, V>,
+    used: &'map mut usize,
+    hash: u64,
     key: K,
 }
 
@@ -16,68 +19,73 @@ impl<'map, K, V> VacantEntry<'map, K, V> {
     }
 
     pub fn insert(self, value: V) -> &'map mut V {
+        *self.used += 1;
         *self.cell = Cell::Item {
             key: self.key,
+            hash: self.hash,
             value,
         };
 
-        match self.cell {
-            Cell::Item { value, .. } => value,
-            _ => unreachable!(),
-        }
+        let Cell::Item { value, .. } = self.cell else {
+            unreachable!()
+        };
+
+        value
     }
 }
 
 pub struct OccupiedEntry<'map, K, V> {
     cell: &'map mut Cell<K, V>,
+    used: &'map mut usize,
 }
 
 impl<'map, K, V> OccupiedEntry<'map, K, V> {
     pub fn get(&self) -> &V {
-        match &self.cell {
-            Cell::Item { value, .. } => value,
-            _ => unreachable!(),
-        }
+        let Cell::Item { value, .. } = &self.cell else {
+            unreachable!()
+        };
+        value
     }
 
     pub fn get_mut(&mut self) -> &mut V {
-        match &mut self.cell {
-            Cell::Item { value, .. } => value,
-            _ => unreachable!(),
-        }
+        let Cell::Item { value, .. } = &mut self.cell else {
+            unreachable!()
+        };
+        value
     }
 
     pub fn into_mut(self) -> &'map mut V {
-        match self.cell {
-            Cell::Item { value, .. } => value,
-            _ => unreachable!(),
-        }
+        let Cell::Item { value, .. } = self.cell else {
+            unreachable!()
+        };
+        value
     }
 
     pub fn insert(&mut self, mut value: V) -> V {
-        match self.cell {
-            Cell::Item { value: v, .. } => std::mem::swap(v, &mut value),
-            _ => unreachable!(),
-        }
-
+        let Cell::Item { value: v, .. } = self.cell else {
+            unreachable!()
+        };
+        std::mem::swap(v, &mut value);
         value
     }
 
     pub fn key(&self) -> &K {
-        match &self.cell {
-            Cell::Item { key, .. } => key,
-            _ => unreachable!(),
-        }
+        let Cell::Item { key, .. } = &self.cell else {
+            unreachable!()
+        };
+        key
     }
 
     pub fn remove(self) -> V {
+        *self.used -= 1;
         let mut cell = Cell::Tombstone;
         std::mem::swap(self.cell, &mut cell);
 
-        match cell {
-            Cell::Item { value, .. } => value,
-            _ => unreachable!(),
-        }
+        let Cell::Item { value, .. } = cell else {
+            unreachable!()
+        };
+
+        value
     }
 }
 
@@ -107,6 +115,7 @@ impl<'map, K, V> Entry<'map, K, V> {
     where
         V: Default,
     {
+        #[allow(clippy::unwrap_or_default)]
         self.or_insert_with(V::default)
     }
 
@@ -140,25 +149,58 @@ where
     K: Eq + Hash,
 {
     pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
-        let idx = self.expected_idx(&key);
+        if self.vec.is_empty() {
+            self.grow_to(1);
+        }
+
+        let hash = self.hasher_builder.hash_one(&key);
+        let idx = hash as usize % self.vec.len();
 
         for idx in self.idx_chain(idx) {
             match &self.vec[idx] {
                 Cell::Item { key: k, .. } if *k == key => {
                     return Entry::Occupied(OccupiedEntry {
                         cell: &mut self.vec[idx],
+                        used: &mut self.used,
                     })
                 }
                 Cell::Empty | Cell::Tombstone => {
+                    self.grow_to(self.used + 1);
                     return Entry::Vacant(VacantEntry {
                         cell: &mut self.vec[idx],
+                        used: &mut self.used,
+                        hash,
                         key,
-                    })
+                    });
                 }
                 _ => (),
             }
         }
 
         unreachable!()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn or_insert() {
+        let mut map: HashMap<u32, u32> = HashMap::new();
+        map.insert(4, 2);
+        map.insert(5, 9);
+
+        let four = *map.entry(4).or_insert(10);
+        let six = *map.entry(6).or_insert(11);
+
+        assert_eq!(four, 2);
+        assert_eq!(six, 11);
+
+        *map.entry(5).or_insert(12) = 13;
+        *map.entry(7).or_insert(14) = 15;
+
+        assert_eq!(map.get(&5), Some(&13));
+        assert_eq!(map.get(&7), Some(&15));
     }
 }
