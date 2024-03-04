@@ -116,3 +116,70 @@ where
         this
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn into_iterator() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        map.insert(2, 10);
+        map.insert(10, 22);
+        map.insert(15, 12);
+
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort();
+        assert_eq!(items, [(2, 10), (10, 22), (15, 12)]);
+    }
+
+    #[test]
+    fn iter() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        map.insert(2, 10);
+        map.insert(10, 22);
+        map.insert(15, 12);
+
+        let mut items: Vec<_> = (&map).into_iter().collect();
+        items.sort();
+        assert_eq!(items, [(&2, &10), (&10, &22), (&15, &12)]);
+
+        let mut items: Vec<_> = (&map).into_iter().collect();
+        items.sort();
+        assert_eq!(items, [(&2, &10), (&10, &22), (&15, &12)]);
+    }
+
+    #[test]
+    fn iter_mut() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        map.insert(2, 10);
+        map.insert(10, 22);
+        map.insert(15, 12);
+
+        let mut items: Vec<_> = (&mut map).into_iter().collect();
+        items.sort();
+        assert_eq!(items, [(&2, &mut 10), (&10, &mut 22), (&15, &mut 12)]);
+
+        *items[0].1 = 1;
+        *items[1].1 = 2;
+        *items[2].1 = 3;
+
+        assert_eq!(map.get(&2), Some(&1));
+        assert_eq!(map.get(&10), Some(&2));
+        assert_eq!(map.get(&15), Some(&3));
+
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort();
+        assert_eq!(items, [(2, 1), (10, 2), (15, 3)]);
+    }
+
+    #[test]
+    fn from_iterator() {
+        let items = vec![(2, 10), (10, 22), (15, 12)];
+        let map: HashMap<_, _> = items.into_iter().collect();
+
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort();
+        assert_eq!(items, [(2, 10), (10, 22), (15, 12)]);
+    }
+}

@@ -300,3 +300,107 @@ impl<T> Default for HashSet<T> {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn empty_hash_map() {
+        let map: HashMap<u64, u64> = HashMap::new();
+        let items: Vec<_> = map.into_iter().collect();
+        assert_eq!(items, []);
+
+        let map: HashMap<u64, u64> = HashMap::with_capacity(1);
+        let items: Vec<_> = map.into_iter().collect();
+        assert_eq!(items, []);
+
+        let map: HashMap<u64, u64> = HashMap::with_capacity(20);
+        let items: Vec<_> = map.into_iter().collect();
+        assert_eq!(items, []);
+    }
+
+    #[test]
+    fn insert() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        assert_eq!(map.insert(2, 10), None);
+        assert_eq!(map.insert(10, 22), None);
+        assert_eq!(map.insert(2, 12), Some(10));
+
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort();
+
+        assert_eq!(items, [(2, 12), (10, 22)]);
+
+        let mut map: HashMap<u64, u64> = HashMap::new();
+
+        let n = 10000;
+        for i in 0..n {
+            map.insert(i, i * 2);
+        }
+
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort();
+        let expected: Vec<_> = (0..10000).map(|i| (i, i * 2)).collect();
+
+        assert_eq!(items, expected);
+    }
+
+    #[test]
+    fn get() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        assert_eq!(map.get(&2), None);
+        assert_eq!(map.get(&6), None);
+        assert_eq!(map.get(&10), None);
+
+        map.insert(2, 10);
+        map.insert(10, 22);
+
+        assert_eq!(map.get(&2), Some(&10));
+        assert_eq!(map.get(&6), None);
+        assert_eq!(map.get(&10), Some(&22));
+
+        let mut map: HashMap<String, u64> = HashMap::new();
+        map.insert("one".to_owned(), 1);
+        map.insert("ten".to_owned(), 10);
+
+        assert_eq!(map.get("one"), Some(&1));
+        assert_eq!(map.get(&"ten".to_owned()), Some(&10));
+    }
+
+    #[test]
+    fn get_mut() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+        assert_eq!(map.get_mut(&2), None);
+        assert_eq!(map.get_mut(&6), None);
+        assert_eq!(map.get_mut(&10), None);
+
+        map.insert(2, 10);
+        map.insert(10, 22);
+
+        let item = map.get_mut(&2).unwrap();
+        assert_eq!(*item, 10);
+
+        *item = 15;
+        assert_eq!(*item, 15);
+        assert_eq!(map.get(&2), Some(&15));
+
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort();
+        assert_eq!(items, [(2, 15), (10, 22)]);
+    }
+
+    #[test]
+    fn remove() {
+        let mut map: HashMap<u64, u64> = HashMap::new();
+
+        map.insert(2, 10);
+        map.insert(10, 22);
+
+        assert_eq!(map.remove(&6), None);
+        assert_eq!(map.remove(&10), Some(22));
+
+        let items: Vec<_> = map.into_iter().collect();
+        assert_eq!(items, [(2, 10)]);
+    }
+}
