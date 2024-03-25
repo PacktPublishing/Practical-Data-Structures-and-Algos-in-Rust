@@ -57,7 +57,6 @@ impl<T> FromIterator<T> for Deque<T> {
 
         Self {
             buffer,
-            mask: shift - 1,
             head: 0,
             len,
         }

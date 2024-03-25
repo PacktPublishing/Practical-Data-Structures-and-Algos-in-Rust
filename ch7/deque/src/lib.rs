@@ -8,22 +8,18 @@ mod iterator;
 // Safety:
 //
 // * `head < buffer.len()`
-// * `len < buffer.len()`
-// * `(mask == 0 && buffer.len() == 0) || (mask + 1 == buffer.len() && (x & mask) == (x % buffer.len()))`
+// * `len <= buffer.len()`
 //
 // If `head + len <= buffer.len()` buffer doesnt wrap, and all the items between
 // `buffer[head..head+len]` are always initialized, and all the other items are not.
 //
 // If `head + len >= buffer.len()`, that mans that the buffer wraps - so `buffer[head..]` and
-// `buffer[..len + head - buffer.len()]` are always initialized, and all the other items are not.`
+// `buffer[..head + len - buffer.len()]` are always initialized, and all the other items are not.`
 //
-// The buffer len is always a power of 2, and the mask is the `buffer.len() - 1` so it maintains a
-// cheap modulo mask for the buffer len.
-//
-// Special cases:
+// The `buffer.len()` is always a power of 2, so `& (buffer.len() - 1)` can be used to calculate
+// the modulo length.
 pub struct Deque<T> {
     buffer: Vec<MaybeUninit<T>>,
-    mask: usize,
     head: usize,
     len: usize,
 }
@@ -32,7 +28,6 @@ impl<T> Deque<T> {
     pub fn new() -> Self {
         Deque {
             buffer: vec![],
-            mask: 0,
             head: 0,
             len: 0,
         }
@@ -40,13 +35,12 @@ impl<T> Deque<T> {
 
     pub fn with_capacity(capacity: usize) -> Self {
         let shift = Self::make_shift(0, capacity);
-        let buffer = std::iter::repeat_with(|| MaybeUninit::uninit())
+        let buffer = std::iter::repeat_with(MaybeUninit::uninit)
             .take(shift)
             .collect();
 
         Self {
             buffer,
-            mask: shift - 1,
             head: 0,
             len: 0,
         }
@@ -66,36 +60,48 @@ impl<T> Deque<T> {
             return;
         }
 
-        let newshift = Self::make_shift(self.mask + 1, capacity);
-        self.buffer.resize_with(newshift, || MaybeUninit::uninit());
+        let newshift = Self::make_shift(self.buffer.len(), capacity);
+        self.buffer.resize_with(newshift, MaybeUninit::uninit);
 
         // Wrapping case
         if self.head + self.len > len {
-            let tail = len - self.head;
-            let (old, new) = self.buffer.split_at_mut(len);
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    &old[self.head] as _,
-                    &mut new[new.len() - tail] as _,
-                    tail,
-                )
-            };
-            self.head = self.buffer.len() - tail;
+            let newlen = self.buffer.len();
+            let head_len = len - self.head;
+            let tail_len = self.head + self.len - len;
+
+            if head_len <= tail_len {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        &self.buffer[self.head] as _,
+                        &mut self.buffer[newlen - head_len] as _,
+                        head_len,
+                    )
+                };
+                self.head = newlen - head_len;
+            } else {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        &self.buffer[0] as _,
+                        &mut self.buffer[len] as _,
+                        tail_len,
+                    )
+                };
+            }
         }
-        self.mask = newshift - 1;
     }
 
     pub fn push_back(&mut self, value: T) {
         self.grow_to(self.len() + 1);
-        self.buffer[(self.head + self.len) & self.mask].write(value);
+        let mask = self.buffer.len() - 1;
+        self.buffer[(self.head + self.len) & mask].write(value);
         self.len += 1;
     }
 
     pub fn pop_back(&mut self) -> Option<T> {
         if !self.is_empty() {
             self.len -= 1;
-            let item =
-                unsafe { self.buffer[(self.head + self.len) & self.mask].assume_init_read() };
+            let mask = self.buffer.len() - 1;
+            let item = unsafe { self.buffer[(self.head + self.len) & mask].assume_init_read() };
             Some(item)
         } else {
             None
@@ -104,7 +110,7 @@ impl<T> Deque<T> {
 
     pub fn push_front(&mut self, value: T) {
         self.grow_to(self.len() + 1);
-        self.head = self.head.wrapping_sub(1) & self.mask;
+        self.head = self.head.wrapping_sub(1) & (self.buffer.len() - 1);
         self.buffer[self.head].write(value);
         self.len += 1;
     }
@@ -112,7 +118,7 @@ impl<T> Deque<T> {
     pub fn pop_front(&mut self) -> Option<T> {
         if !self.is_empty() {
             let item = unsafe { self.buffer[self.head].assume_init_read() };
-            self.head = (self.head + 1) & self.mask;
+            self.head = (self.head + 1) & (self.buffer.len() - 1);
             self.len -= 1;
             Some(item)
         } else {
@@ -122,7 +128,8 @@ impl<T> Deque<T> {
 
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.len {
-            let item = unsafe { self.buffer[(index + self.head) & self.mask].assume_init_ref() };
+            let mask = self.buffer.len() - 1;
+            let item = unsafe { self.buffer[(index + self.head) & mask].assume_init_ref() };
             Some(item)
         } else {
             None
@@ -131,7 +138,8 @@ impl<T> Deque<T> {
 
     pub fn get_mut(&mut self, index: usize) -> Option<&T> {
         if index < self.len {
-            let item = unsafe { self.buffer[(index + self.head) & self.mask].assume_init_mut() };
+            let mask = self.buffer.len() - 1;
+            let item = unsafe { self.buffer[(index + self.head) & mask].assume_init_mut() };
             Some(item)
         } else {
             None
@@ -268,6 +276,7 @@ impl<T> Deque<T> {
 
     fn make_shift(base: usize, capacity: usize) -> usize {
         std::iter::successors(Some(base.max(1 << MIN_SHIFT)), |shift| Some(shift << 1))
+            .take_while(|shift| *shift != 0)
             .find(|shift| *shift >= capacity)
             .unwrap()
     }
@@ -283,8 +292,7 @@ impl<T> Drop for Deque<T> {
     fn drop(&mut self) {
         let len = self.buffer.len();
 
-        if self.is_empty() {
-        } else if self.head + self.len <= len {
+        if self.head + self.len <= len {
             let slice = &mut self.buffer[self.head..self.head + self.len];
             let slice: &mut [T] = unsafe { transmute(slice) };
             unsafe { drop_in_place(slice) };
