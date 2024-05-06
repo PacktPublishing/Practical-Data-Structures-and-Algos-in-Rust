@@ -9,8 +9,9 @@ pub struct Ref<'a, T> {
 
 impl<'a, T> Ref<'a, T> {
     pub fn clone(orig: &Self) -> Ref<'a, T> {
-        let counter = orig.counter.replace(0);
-        orig.counter.set(counter + 1);
+        let counter = orig.counter.get();
+        let counter = counter.checked_add(1).expect("Trying to borrow RefCell, but too many borrows exist");
+        orig.counter.set(counter);
 
         Ref {
             counter: orig.counter,
@@ -18,9 +19,10 @@ impl<'a, T> Ref<'a, T> {
         }
     }
 
-    pub fn map<U>(orig: &Self, f: impl FnOnce(&T) -> &U) -> Ref<'a, U> {
-        let counter = orig.counter.replace(0);
-        orig.counter.set(counter + 1);
+    pub fn map<U>(orig: &Self, f: impl FnOnce(&'a T) -> &'a U) -> Ref<'a, U> {
+        let counter = orig.counter.get();
+        let counter = counter.checked_add(1).expect("Trying to borrow RefCell, but too many borrows exist");
+        orig.counter.set(counter);
 
         Ref {
             counter: orig.counter,
@@ -30,10 +32,11 @@ impl<'a, T> Ref<'a, T> {
 
     pub fn map_split<U, V>(
         orig: &Self,
-        f: impl FnOnce(&T) -> (&U, &V),
+        f: impl FnOnce(&'a T) -> (&'a U, &'a V),
     ) -> (Ref<'a, U>, Ref<'a, V>) {
-        let counter = orig.counter.replace(0);
-        orig.counter.set(counter + 2);
+        let counter = orig.counter.get();
+        let counter = counter.checked_add(2).expect("Trying to borrow RefCell, but too many borrows exist");
+        orig.counter.set(counter);
 
         let (u, v) = f(orig.item);
 
@@ -61,7 +64,7 @@ impl<'a, T> Deref for Ref<'a, T> {
 
 impl<'a, T> Drop for Ref<'a, T> {
     fn drop(&mut self) {
-        let counter = self.counter.replace(0);
+        let counter = self.counter.get();
         self.counter.set(counter - 1);
     }
 }
@@ -72,7 +75,7 @@ pub struct RefMutCnt<'a>(&'a Cell<isize>);
 impl<'a> Drop for RefMutCnt<'a> {
     fn drop(&mut self) {
         let cnt = self.0;
-        let counter = cnt.replace(0);
+        let counter = cnt.get();
         cnt.set(counter + 1);
     }
 }
@@ -95,17 +98,12 @@ impl<'a, T> RefMut<'a, T> {
         orig: Self,
         f: impl FnOnce(&'a mut T) -> (&'a mut U, &'a mut V),
     ) -> (RefMut<'a, U>, RefMut<'a, V>) {
-        let counter = orig.counter.0.replace(0);
-        let counter = counter - 1;
-
-        if counter > 0 {
-            panic!("Trying to borrow RefCell mutably, but too many borrows exist");
-        }
+        let counter = orig.counter.0.get();
+        let counter = counter.checked_add(1).expect("Trying to borrow RefCell mutably, but too many borrows exist");
 
         orig.counter.0.set(counter);
 
         let (u, v) = f(orig.item);
-
         let u = RefMut {
             counter: orig.counter.clone(),
             item: u,
@@ -151,12 +149,12 @@ impl<T> RefCell<T> {
     }
 
     pub fn swap(&self, other: &RefCell<T>) {
-        let counter = self.counter.replace(0);
+        let counter = self.counter.get();
         if counter != 0 {
             panic!("Trying to swap RefCell while it is already borrowed");
         }
 
-        let counter = other.counter.replace(0);
+        let counter = other.counter.get();
         if counter != 0 {
             panic!("Trying to swap RefCell while it is already borrowed");
         }
@@ -165,16 +163,12 @@ impl<T> RefCell<T> {
     }
 
     pub fn borrow(&self) -> Ref<'_, T> {
-        let counter = self.counter.replace(0);
+        let counter = self.counter.get();
         if counter < 0 {
             panic!("Trying to borrow RefCell while it is already borrowed for write");
         }
 
-        let counter = counter + 1;
-        if counter < 0 {
-            panic!("Trying to borrow RefCell, but too many borrows exist");
-        }
-
+        let counter = counter.checked_add(1).expect("Trying to borrow RefCell, but too many borrows exist");
         self.counter.set(counter);
 
         Ref {
@@ -196,16 +190,12 @@ impl<T> RefCell<T> {
     }
 
     pub fn try_borrow(&self) -> Option<Ref<'_, T>> {
-        let counter = self.counter.replace(0);
+        let counter = self.counter.get();
         if counter < 0 {
             return None;
         }
 
-        let counter = counter + 1;
-        if counter < 0 {
-            return None;
-        }
-
+        let counter = counter.checked_add(1)?;
         self.counter.set(counter);
 
         Some(Ref {
@@ -260,13 +250,18 @@ mod tests {
         }
 
         let cell = RefCell::new(A { x: 15 });
-        {
+        let y = {
             let x = cell.borrow();
             let y = Ref::map(&x, |a| &a.x);
 
             assert_eq!(*y, 15);
             assert_eq!(x.x, 15);
-        }
+
+            y
+        };
+
+        assert_eq!(*y, 15);
+        drop(y);
         assert_eq!(cell.into_inner().x, 15);
     }
 

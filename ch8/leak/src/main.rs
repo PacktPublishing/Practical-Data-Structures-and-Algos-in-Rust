@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 struct Leaked(usize);
 
@@ -15,7 +15,7 @@ struct Forget<T> {
 }
 
 impl<T> Forget<T> {
-    pub fn new(value: T) -> Weak<Self> {
+    pub fn new(value: T) -> Rc<Self> {
         let this = Rc::new(Forget {
             _value: value,
             _node: None.into(),
@@ -23,7 +23,7 @@ impl<T> Forget<T> {
 
         this._node.set(Some(Rc::clone(&this)));
 
-        Rc::downgrade(&this)
+        this
     }
 }
 

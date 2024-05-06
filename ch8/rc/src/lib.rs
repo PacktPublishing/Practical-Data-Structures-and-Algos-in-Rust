@@ -93,11 +93,7 @@ impl<T> Rc<T> {
 
     pub fn downgrade(this: &Self) -> Weak<T> {
         let counters = unsafe { this.counters.as_ref() };
-        let weak = counters.weak.get() + 1;
-
-        if weak == 0 {
-            panic!("Attempt to downgrade Rc, but too many weak references are alive");
-        }
+        let weak = counters.weak.get().checked_add(1).expect("Attempt to downgrade Rc, but too many weak references are alive");
 
         counters.weak.set(weak);
 
@@ -111,11 +107,7 @@ impl<T> Rc<T> {
 impl<T> Clone for Rc<T> {
     fn clone(&self) -> Self {
         let counters = unsafe { self.counters.as_ref() };
-        let strong = counters.strong.get() + 1;
-
-        if strong == 0 {
-            panic!("Attempt to clone Rc, but too many references are alive");
-        }
+        let strong = counters.strong.get().checked_add(1).expect("Attempt to clone Rc, but too many references are alive");
 
         counters.strong.set(strong);
 
@@ -169,12 +161,7 @@ impl<T> Weak<T> {
             return None;
         }
 
-        let strong = strong + 1;
-
-        if strong == 0 {
-            panic!("Attempt to upgrade Weak, but too many strong references are alive");
-        }
-
+        let strong = strong.checked_add(1).expect("Attempt to upgrade Weak, but too many strong references are alive");
         counters.strong.set(strong);
 
         Some(Rc {
