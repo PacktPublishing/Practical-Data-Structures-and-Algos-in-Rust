@@ -6,7 +6,6 @@ use std::ptr::NonNull;
 
 struct RcCnt {
     strong: Cell<usize>,
-    weak: Cell<usize>,
 }
 
 pub struct Rc<T> {
@@ -23,7 +22,6 @@ impl<T> Rc<T> {
     pub fn new(value: T) -> Self {
         let counters = RcCnt {
             strong: 1.into(),
-            weak: 1.into(),
         };
 
         let (layout, value_offset) = Self::layout();
@@ -51,16 +49,10 @@ impl<T> Rc<T> {
             return None;
         }
 
-        counters.strong.set(0);
-        let weak = counters.weak.get() - 1;
-        counters.weak.set(weak);
-
         let value = unsafe { this.value.as_ptr().read() };
 
-        if weak == 0 {
-            let (layout, _) = Self::layout();
-            unsafe { dealloc(this.counters.as_ptr() as _, layout) };
-        }
+        let (layout, _) = Self::layout();
+        unsafe { dealloc(this.counters.as_ptr() as _, layout) };
 
         forget(this);
         Some(value)
@@ -89,18 +81,6 @@ impl<T> Rc<T> {
         }
 
         unsafe { this.value.as_mut() }
-    }
-
-    pub fn downgrade(this: &Self) -> Weak<T> {
-        let counters = unsafe { this.counters.as_ref() };
-        let weak = counters.weak.get().checked_add(1).expect("Attempt to downgrade Rc, but too many weak references are alive");
-
-        counters.weak.set(weak);
-
-        Weak {
-            counters: this.counters,
-            value: this.value,
-        }
     }
 }
 
@@ -131,56 +111,15 @@ impl<T> Drop for Rc<T> {
         let counters = unsafe { self.counters.as_ref() };
 
         let strong = counters.strong.get() - 1;
-        counters.strong.set(strong);
 
         if strong == 0 {
             unsafe { self.value.as_ptr().drop_in_place() }
 
-            let weak = counters.weak.get() - 1;
-            if weak == 0 {
-            } else {
-                counters.weak.set(weak);
-                let (layout, _) = Self::layout();
-                unsafe { dealloc(self.value.as_ptr() as _, layout) }
-            }
-        }
-    }
-}
-
-pub struct Weak<T> {
-    counters: NonNull<RcCnt>,
-    value: NonNull<T>,
-}
-
-impl<T> Weak<T> {
-    pub fn upgrade(&self) -> Option<Rc<T>> {
-        let counters = unsafe { self.counters.as_ref() };
-        let strong = counters.strong.get();
-
-        if strong == 0 {
-            return None;
-        }
-
-        let strong = strong.checked_add(1).expect("Attempt to upgrade Weak, but too many strong references are alive");
-        counters.strong.set(strong);
-
-        Some(Rc {
-            counters: self.counters,
-            value: self.value,
-        })
-    }
-}
-
-impl<T> Drop for Weak<T> {
-    fn drop(&mut self) {
-        let counters = unsafe { self.counters.as_ref() };
-        let weak = counters.weak.get() - 1;
-
-        if weak == 0 {
-            let (layout, _) = Rc::<T>::layout();
-            unsafe { dealloc(self.counters.as_ptr() as _, layout) };
+            let (layout, _) = Self::layout();
+            unsafe { dealloc(self.counters.as_ptr() as _, layout) }
         } else {
-            counters.weak.set(weak);
+            counters.strong.set(strong);
         }
     }
 }
+
