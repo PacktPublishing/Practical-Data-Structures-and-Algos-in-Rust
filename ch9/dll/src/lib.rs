@@ -33,7 +33,7 @@ impl<T> LinkedList<T> {
             prev: self.last.clone(),
         }));
 
-        if let Some(last) = self.last.upgrade() {
+        if let Some(last) = node.borrow().prev.upgrade() {
             last.borrow_mut().next = Some(Rc::clone(&node));
         } else {
             self.first = Some(Rc::clone(&node));
@@ -45,12 +45,14 @@ impl<T> LinkedList<T> {
     pub fn push_front(&mut self, value: T) {
         let node = Rc::new(RefCell::new(Node {
             value,
-            next: self.first.clone(),
+            next: self.first.take(),
             prev: Weak::new(),
         }));
 
-        if let Some(first) = &self.first {
+        if let Some(first) = &node.borrow().next {
             first.borrow_mut().prev = Rc::downgrade(&node);
+        } else {
+            self.last = Rc::downgrade(&node);
         }
 
         self.first = Some(Rc::clone(&node));
