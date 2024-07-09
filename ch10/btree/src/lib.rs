@@ -1,7 +1,12 @@
-const B: usize = 2;
+const B: usize = 6;
 const MIN_ITEMS: usize = B - 1;
 const MAX_ITEMS: usize = 2 * B - 1;
 const MAX_CHILDREN: usize = MAX_ITEMS + 1;
+
+mod entry;
+
+pub use entry::Entry;
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone)]
 pub struct BTree<K, V> {
@@ -18,50 +23,44 @@ impl<K, V> BTree<K, V> {
         Self { root }
     }
 
-    pub fn get(&self, key: &K) -> Option<&V>
-    where
-        K: Ord,
-    {
-        self.root.get(key)
-    }
-
     pub fn iter(&self) -> Iter<K, V> {
         Iter::new(&self.root)
     }
+}
 
-    pub fn insert(&mut self, key: K, value: V) -> Option<V>
-    where
-        K: Ord,
-    {
+impl<K, V> BTree<K, V>
+where
+    K: Ord,
+{
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.root.get(key)
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.root.split_root();
         self.root.insert(key, value)
     }
 
-    pub fn remove(&mut self, key: &K) -> Option<V>
-    where
-        K: Ord,
-    {
+    pub fn remove(&mut self, key: &K) -> Option<V> {
         let result = self.root.remove(key);
         self.root.reduce_root();
         result
     }
 
-    pub fn pop_front(&mut self) -> Option<(K, V)>
-    where
-        K: Ord,
-    {
+    pub fn pop_front(&mut self) -> Option<(K, V)> {
         let result = self.root.remove_first().unwrap();
         self.root.reduce_root();
         Some(result)
     }
 
-    pub fn pop_back(&mut self) -> Option<(K, V)>
-    where
-        K: Ord,
-    {
+    pub fn pop_back(&mut self) -> Option<(K, V)> {
         let result = self.root.remove_last();
         self.root.reduce_root();
         result
+    }
+
+    pub fn entry(&mut self, key: K) -> Entry<K, V> {
+        Entry::new(&mut self.root, key)
     }
 }
 
@@ -87,6 +86,28 @@ struct Node<K, V> {
     children: Vec<Self>,
 }
 
+impl<K, V> Node<K, V> {
+    fn is_full(&self) -> bool {
+        self.items.len() >= MAX_ITEMS
+    }
+
+    /// Returns mutable references to the item in the tree and both children split by this item.
+    fn siblings(&mut self, idx: usize) -> (&mut (K, V), &mut Self, &mut Self) {
+        let item = &mut self.items[idx];
+        let [left, right] = &mut self.children[idx..=idx + 1] else {
+            unreachable!()
+        };
+        (item, left, right)
+    }
+
+    /// Reduce height of the tree if the root node has only a single child
+    fn reduce_root(&mut self) {
+        if self.children.len() == 1 {
+            *self = self.children.pop().unwrap();
+        }
+    }
+}
+
 impl<K, V> Node<K, V>
 where
     K: Ord,
@@ -102,10 +123,6 @@ where
         }
     }
 
-    fn is_full(&self) -> bool {
-        self.items.len() >= MAX_ITEMS
-    }
-
     /// Splits the root node - makes it into the node with only two elements after the split. Split
     /// is performed only if the node is full. Returns if the root node was actually split.
     fn split_root(&mut self) {
@@ -119,15 +136,6 @@ where
             self.children.push(left);
             self.children.push(right);
         }
-    }
-
-    /// Returns mutable references to the item in the tree and both children split by this item.
-    fn siblings(&mut self, idx: usize) -> (&mut (K, V), &mut Self, &mut Self) {
-        let item = &mut self.items[idx];
-        let [left, right] = &mut self.children[idx..=idx + 1] else {
-            unreachable!()
-        };
-        (item, left, right)
     }
 
     /// Splits the given node returning the middle element and the right node. The `self` node
@@ -158,21 +166,35 @@ where
     /// Insert the element into this node. It assumes this node is not full, so the child node can
     /// be split if necessary without backtracking.
     fn insert(&mut self, key: K, value: V) -> Option<V> {
-        assert!(self.items.len() < MAX_ITEMS);
-        let idx = self.items.binary_search_by(|item| item.0.cmp(&key));
+        let (node, idx) = self.entry(&key);
+
+        if idx < node.items.len() && node.items[idx].0 == key {
+            // Key already exists, overwrite
+            Some(std::mem::replace(&mut node.items[idx].1, value))
+        } else {
+            node.items.insert(idx, (key, value));
+            None
+        }
+    }
+
+    /// Prepares a space for insertion but without inserting an item. Returns a node with index
+    /// matching the given key if it exist in the tree, or the non full leaf node where the new
+    /// item should be inserted.
+    fn entry(&mut self, key: &K) -> (&mut Self, usize) {
+        debug_assert!(self.items.len() < MAX_ITEMS);
+        let idx = self.items.binary_search_by(|item| item.0.cmp(key));
 
         let idx = match idx {
             // Key already exists, overwrite
             Ok(idx) => {
-                return Some(std::mem::replace(&mut self.items[idx].1, value));
+                return (self, idx);
             }
             Err(idx) => idx,
         };
 
         if self.children.is_empty() {
-            // Leaf node, just insert the element
-            self.items.insert(idx, (key, value));
-            None
+            // Leaf node, we have place to insert
+            (self, idx)
         } else if let Some((split, right)) = self.children[idx].split() {
             // Internal node, and the child to insert into was full, so the split succeeded. We
             // need to insert the right node after the split and the middle element - we can do so,
@@ -180,22 +202,25 @@ where
             self.items.insert(idx, split);
             self.children.insert(idx + 1, right);
 
-            let (split, left, right) = self.siblings(idx);
-            match key.cmp(&split.0) {
-                std::cmp::Ordering::Less => left.insert(key, value),
-                std::cmp::Ordering::Greater => right.insert(key, value),
-                // After split the item with matching key ended up in this node - replace and return
-                std::cmp::Ordering::Equal => Some(std::mem::replace(&mut split.1, value)),
+            match key.cmp(&self.items[idx].0) {
+                Ordering::Less => self.children[idx].entry(key),
+                Ordering::Greater => self.children[idx + 1].entry(key),
+                // After split the item with matching key ended up in this node
+                Ordering::Equal => (self, idx),
             }
         } else {
             // Internal node, and the child to insert into is not full
-            self.children[idx].insert(key, value)
+            self.children[idx].entry(key)
         }
     }
 
     /// Merges the `idx` child with its right sibling. That removes one item from the node, so it
-    /// should have at least `MIN_ITEMS + 1` if it is not a root node.
+    /// should have at least `MIN_ITEMS + 1` if it is not a root node. Also it requires children to
+    /// be merged to be minimal nodes.
     fn merge(&mut self, idx: usize) {
+        debug_assert_eq!(self.children[idx].items.len(), MIN_ITEMS);
+        debug_assert_eq!(self.children[idx + 1].items.len(), MIN_ITEMS);
+
         let right = self.children.remove(idx + 1);
         let item = self.items.remove(idx);
         let left = &mut self.children[idx];
@@ -219,8 +244,7 @@ where
             let item = std::mem::replace(split, newsplit);
             right.items.insert(0, item);
 
-            if !left.children.is_empty() {
-                let child = left.children.pop().unwrap();
+            if let Some(child) = left.children.pop() {
                 right.children.insert(0, child);
             }
 
@@ -315,24 +339,10 @@ where
             // Index not found in th leaf node
             Err(_) if self.children.is_empty() => None,
             // Children to remove from has spare items - remove item from it
-            Err(idx) if self.children[idx].items.len() > MIN_ITEMS => {
-                self.children[idx].remove(key)
-            }
             Err(idx) => {
-                // Removing from the minimal child node - first we need to make it at least one
-                // element bigger by borrowing an elementnt from the sibling or merging it with the
-                // sibling
                 let idx = self.make_removable(idx);
                 self.children[idx].remove(key)
             }
-        }
-    }
-
-    /// Reduce height of the tree if the root node has only a single child
-    fn reduce_root(&mut self) {
-        if self.children.len() == 1 {
-            let root = self.children.pop().unwrap();
-            *self = root;
         }
     }
 }
