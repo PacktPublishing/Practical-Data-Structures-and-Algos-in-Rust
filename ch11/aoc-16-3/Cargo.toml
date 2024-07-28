@@ -1,0 +1,9 @@
+[package]
+name = "aoc-16-3"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+bench = []
+
+[dependencies]
