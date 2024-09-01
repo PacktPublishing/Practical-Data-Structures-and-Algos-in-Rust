@@ -1,6 +1,6 @@
 pub fn knapsack(items: &[(u64, u64)], backpack: u64) -> Vec<usize> {
     (0..items.len())
-        .filter(|idx| items[*idx].0 <= backpack)
+        .filter(|idx| items[*idx].0 <= backpack && items[*idx].0 > 0)
         .map(|idx| {
             let weight = items[idx].0;
             let mut result = knapsack(items, backpack - weight);
